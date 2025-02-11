@@ -27,6 +27,7 @@ def save_bar_data(symbol:str, timeframe, start:str, end:str, save_dir:str) -> No
     print(f"\nRetrieving data for: {symbol} from {start} to {end}...")
     bars = client.get_stock_bars(request)
     bars = bars.df
+    bars.reset_index(level='symbol', drop=True, inplace=True)
 
     bars.to_csv(f'./{save_dir}/{symbol}_{timeframe}_{start}_{end}.csv')
     print(f"Data saved to: {save_dir}/{symbol}_{timeframe}_{start}_{end}.csv\n")
