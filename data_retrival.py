@@ -15,8 +15,9 @@ def check_dir(path_dir:str) -> None:
 
 def save_bar_data(symbol:str, timeframe, start:str, end:str, save_dir:str) -> None:
 
-    check_dir(save_dir)
+    check_dir(save_dir) # Create directory if it doesn't exist
 
+    # Define API request
     client = initialize_client()
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
@@ -27,7 +28,8 @@ def save_bar_data(symbol:str, timeframe, start:str, end:str, save_dir:str) -> No
     print(f"\nRetrieving data for: {symbol} from {start} to {end}...")
     bars = client.get_stock_bars(request)
     bars = bars.df
-    bars.reset_index(level='symbol', drop=True, inplace=True)
+
+    bars.reset_index(level='symbol', drop=True, inplace=True) # Remove multi-index
 
     bars.to_csv(f'./{save_dir}/{symbol}_{timeframe}_{start}_{end}.csv')
     print(f"Data saved to: {save_dir}/{symbol}_{timeframe}_{start}_{end}.csv\n")
