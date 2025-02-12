@@ -35,4 +35,4 @@ def save_bar_data(symbol:str, timeframe, start:str, end:str, save_dir:str) -> No
     print(f"Data saved to: {save_dir}/{symbol}_{timeframe}_{start}_{end}.csv\n")
 
 
-save_bar_data('NVDA', TimeFrame.Minute, '2023-08-01', '2024-01-31', 'data')
+save_bar_data('INTC', TimeFrame.Minute, '2023-08-01', '2024-01-31', 'data')
