@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from gym import spaces
 from gym_trading_env.environments import TradingEnv
 
@@ -163,33 +164,40 @@ def dt_policy(env):
     curr = env.opens[env.current_step]
 
     if curr > buy_line:
-        return 1
-    elif curr < sell_line:
-        return 2
-    else:
         return 0
+    elif curr < sell_line:
+        return 1
     
 
-def intraday_greedy_actions(env_df, window_size=60, device="cuda"):
+def intraday_greedy_actions(env, device="cuda"):
 
-    num_steps = len(env_df)
-    day_len = 240  
+    day_len = compute_day_length(env.df)  
 
-    open_prices = torch.tensor(env_df["open"].values, dtype=torch.float32, device=device)
-    actions = torch.zeros(num_steps, dtype=torch.int, device=device)
+    open_prices = env.opens
+    close_prices = env.closes
+    num_steps = len(open_prices)
+    actions = np.zeros(num_steps, dtype=int)
 
-    i = window_size
+    i = env.window_size
     while i < (num_steps - 1):
         day_start = i
         day_end = min(i + day_len, num_steps)
         
         day_opens = open_prices[day_start:day_end]
-        idx_min = torch.argmin(day_opens).item()  # Buy
-        idx_max = torch.argmax(day_opens).item()  # Sell
+        day_closes = close_prices[day_start:day_end]
+        idx_min = np.argmin(day_opens).item()  # Buy
+        idx_max = np.argmax(day_closes).item()  # Sell
 
-        actions[day_start + idx_min] = 1  # Long
-        actions[day_start + idx_max] = 2  # Short
+        actions[day_start + idx_min] = 0  # Long
+        actions[day_start + idx_max] = 1  # Short
 
         i = day_end  
 
     return actions
+
+def compute_day_length(df):
+
+    timestamps = df['timestamp']
+    time_diffs = timestamps.diff().dropna()
+    day_len = time_diffs[time_diffs > pd.Timedelta(minutes=1)].count()  # Count intraday steps
+    return day_len
