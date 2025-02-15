@@ -14,30 +14,53 @@ class Episode:
         self.obs = []
         self.actions = []
         self.rewards = []
-        self.done_flags = []
         self.expert_actions = []  # 'prophetic' (intraday actions)
+        self.dones = [] # 'done' flags
+        self.is_demo = False # if the episode is a demonstration
+        self.priority = 1.0 # priority for PER
 
-class RBuffer:
-    def __init__(self, max_episodes=1000, device="cuda"):
+class PERBuffer:
+    def __init__(self, max_episodes=1000, alpha=0.6, beta=0.4, device="cuda"):
         self.max_episodes = max_episodes
+        self.alpha = alpha # priority exponent
+        self.beta = beta # importance sampling exponent
         self.device = device
         self.episodes = []
+        self.priorities = [] # for PER
     
     def add_episode(self, ep):
+        # Remove the oldest episode if buffer is full
         if len(self.episodes) >= self.max_episodes:
             self.episodes.pop(0)
+            self.priorities.pop(0)
 
         ep.obs = torch.tensor(np.array(ep.obs, dtype=np.float32), device=self.device)
         ep.actions = torch.tensor(np.array(ep.actions, dtype=np.int64), device=self.device)
         ep.rewards = torch.tensor(np.array(ep.rewards, dtype=np.float32), device=self.device)
-        ep.done_flags = torch.tensor(np.array(ep.done_flags, dtype=bool), device=self.device)
+        ep.expert_actions = torch.tensor(np.array(ep.expert_actions, dtype=np.int64), device=self.device)
+        ep.dones = torch.tensor(np.array(ep.done_flags, dtype=bool), device=self.device)
         
         self.episodes.append(ep)
+        self.priorities.append(ep.priority ** self.alpha)
+
+    def update_priorities(self, indices, new_priorities):
+        # Eq (10)
+        for i, p in zip(indices, new_priorities):
+            self.priorities[i] = p ** self.alpha
 
     def sample(self, batch_size):
-        indices = torch.randint(0, len(self.episodes), (batch_size,), device=self.device)
-        batch_eps = [self.episodes[i] for i in indices.cpu().numpy()]
-        return batch_eps
+        probs = np.array(self.priorities) / np.sum(self.priorities)
+        indices = np.random.choice(len(self.episodes), batch_size, p=probs)
+        batch = [self.episodes[i] for i in indices]
+        
+        # Eq (10)
+        weights = (len(self.episodes) * probs[indices]) ** (-self.beta)
+        weights = weights / np.max(weights)
+        
+        episodes = [self.episodes[i] for i in indices]
+
+        weights = torch.tensor(weights, dtype=torch.float32, device=self.device)
+        return batch, episodes, indices, weights
     
     def __len__(self):
         return len(self.episodes)
