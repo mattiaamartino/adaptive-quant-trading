@@ -21,7 +21,12 @@ class POMDPTEnv(TradingEnv):
             high=np.inf, 
             shape=(4 + 4 * window_size,), # OHLCV + 2 indicators + account
             )
-        self.action_space = spaces.Discrete(2) # buy or sell
+        self.action_space = spaces.Box(
+            low=0, 
+            high=1, 
+            shape=(2,), 
+            dtype=np.float32
+        ) # [P long, P short]
 
         # Reward variables
         self.eta = eta
@@ -155,18 +160,24 @@ class POMDPTEnv(TradingEnv):
 
 def dt_policy(env):
 
-    o = env._next_observation()
-    n = env.window_size
-
-    buy_line = o[4*n]
-    sell_line= o[4*n + 1]
+    buy_line = env.buy_line
+    sell_line= env.sell_line
 
     curr = env.opens[env.current_step]
 
+    action = np.zeros(2, dtype=np.float32)
+
     if curr > buy_line:
-        return 0
+        action[0] = 1.0 # Long
     elif curr < sell_line:
-        return 1
+        action[1] = 1.0 # Short
+    else: # Do nothing
+        if env.position == 1:
+            action[0] = 1.0
+        elif env.position == 0:
+            action[1] = 1.0
+    
+    return action
     
 
 def intraday_greedy_actions(env, device="cuda"):
@@ -197,7 +208,7 @@ def intraday_greedy_actions(env, device="cuda"):
 
 def compute_day_length(df):
 
-    timestamps = df['timestamp']
+    timestamps = pd.to_datetime(df['timestamp'])
     time_diffs = timestamps.diff().dropna()
     day_len = time_diffs[time_diffs > pd.Timedelta(minutes=1)].count()  # Count intraday steps
     return day_len
