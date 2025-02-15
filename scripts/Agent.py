@@ -1,4 +1,5 @@
 import numpy as np
+import copy
 
 import torch
 import torch.nn as nn
@@ -28,20 +29,23 @@ class PERBuffer:
         self.episodes = []
         self.priorities = [] # for PER
     
-    def add_episode(self, ep):
+    def add_episode(self, episode, eps_d=0.1):
         # Remove the oldest episode if buffer is full
         if len(self.episodes) >= self.max_episodes:
             self.episodes.pop(0)
             self.priorities.pop(0)
 
-        ep.obs = torch.tensor(np.array(ep.obs, dtype=np.float32), device=self.device)
-        ep.actions = torch.tensor(np.array(ep.actions, dtype=np.int64), device=self.device)
-        ep.rewards = torch.tensor(np.array(ep.rewards, dtype=np.float32), device=self.device)
-        ep.expert_actions = torch.tensor(np.array(ep.expert_actions, dtype=np.int64), device=self.device)
-        ep.dones = torch.tensor(np.array(ep.done_flags, dtype=bool), device=self.device)
+        episode.obs = torch.tensor(np.array(episode.obs, dtype=np.float32), device=self.device)
+        episode.actions = torch.tensor(np.array(episode.actions, dtype=np.int64), device=self.device)
+        episode.rewards = torch.tensor(np.array(episode.rewards, dtype=np.float32), device=self.device)
+        episode.expert_actions = torch.tensor(np.array(episode.expert_actions, dtype=np.int64), device=self.device)
+        episode.dones = torch.tensor(np.array(episode.dones, dtype=bool), device=self.device)
+
+        if episode.is_demo:
+            episode.priority += eps_d
         
-        self.episodes.append(ep)
-        self.priorities.append(ep.priority ** self.alpha)
+        self.episodes.append(episode)
+        self.priorities.append(episode.priority ** self.alpha)
 
     def update_priorities(self, indices, new_priorities):
         # Eq (10)
@@ -56,11 +60,9 @@ class PERBuffer:
         # Eq (10)
         weights = (len(self.episodes) * probs[indices]) ** (-self.beta)
         weights = weights / np.max(weights)
-        
-        episodes = [self.episodes[i] for i in indices]
 
         weights = torch.tensor(weights, dtype=torch.float32, device=self.device)
-        return batch, episodes, indices, weights
+        return batch, indices, weights
     
     def __len__(self):
         return len(self.episodes)
@@ -68,45 +70,85 @@ class PERBuffer:
 # AGENT
 
 class iRDPGAgent(nn.Module):
-    def __init__(self, obs_dim, action_dim=3, hidden_dim=64, device="cuda"):
+    def __init__(self, 
+                 obs_dim, 
+                 action_dim=2, 
+                 hidden_dim=64, 
+                 gamma=0.99,
+                 tau=0.001,
+                 device="cuda"):
         super().__init__()
 
-        self.actor_gru = nn.GRU(obs_dim, hidden_dim, batch_first=True) # [batch, seq_len, obs_dim]
-        self.actor_fc = nn.Linear(hidden_dim, action_dim) # [batch, seq_len, action_dim]
+        self.actor_gru = nn.GRU(obs_dim, hidden_dim, batch_first=True) 
+        self.actor_fc = nn.Linear(hidden_dim, action_dim) # [P long, P short]
 
-        self.critic_gru = nn.GRU(obs_dim + action_dim, hidden_dim, batch_first=True) # [batch, seq_len, obs_dim + action_dim]
-        self.critic_fc = nn.Linear(hidden_dim, action_dim) # [batch, seq_len, action_dim]
+        self.critic_gru = nn.GRU(obs_dim + action_dim, hidden_dim, batch_first=True)
+        self.critic_fc = nn.Linear(hidden_dim, 1)
+
+        # Target networks
+        self.target_actor = copy.deepcopy(self.actor_gru)
+        self.target_actor_fc = copy.deepcopy(self.actor_fc)
+        self.target_critic = copy.deepcopy(self.critic_gru)
+        self.target_critic_fc = copy.deepcopy(self.critic_fc)
+
+        # Initalize target networks
+        self._update_target_networks(1.0)
 
         self.device = device
-        self.action_dim = action_dim
 
-    def forward(self, obs, actions, h_actor=None, h_critic=None):
-
+    def forward(self, obs, h_actor=None, h_critic=None):
         obs = obs.to(self.device)
         
         # Actor
         z_actor, h_actor_next = self.actor_gru(obs, h_actor)
-        logits = self.actor_fc(z_actor)
+        action_probs = torch.sigmoid(self.actor_fc(z_actor))
+
         # Critic
-        actions_onehot = torch.nn.functional.one_hot(actions, num_classes=self.action_dim).float() # Ensure correct structure
+        z_critic, h_critic_next = self.critic_gru(torch.concat([obs, action_probs.detach()], dim=-1), h_critic)
+        q_value = self.critic_fc(z_critic)
 
-        z_critic, h_critic_next = self.critic_gru(torch.concat([obs, actions_onehot], dim=-1), h_critic)
-        q_value = self.critic_fc(z_critic[:, -1])
-
-        return logits, q_value, h_actor_next, h_critic_next
+        return action_probs, q_value, h_actor_next, h_critic_next
     
-    def act(self, obs, h_actor=None):
+    def target_forward(self, obs, h_actor=None, h_critic=None):
+        obs = obs.to(self.device)
 
-        dummy_actions = torch.zeros((1, 1), dtype=torch.long, device=self.device)
+        # Target actor
+        z_actor, h_actor_next = self.target_actor(obs, h_actor)
+        target_action_probs = torch.softmax(self.target_actor_fc(z_actor))
+
+        # Target critic
+        z_critic, h_critic_next = self.target_critic(torch.concat([obs, target_action_probs.detac()], dim=-1), h_critic)
+        target_q_value = self.target_critic_fc(z_critic)
+
+        return target_action_probs, target_q_value, h_actor_next, h_critic_next
         
-        with torch.no_grad():
-            obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device).view(1,1,-1)  
-            logits, _, h_actor, _ = self.forward(obs_t, dummy_actions, h_actor)
-            probs = torch.softmax(logits[0,0,:], dim=-1)  
-            action = probs.argmax().item()
-            
-        return action, h_actor
     
+    def act(self, obs, h_actor=None, add_noise=True):
+
+        obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+
+        with torch.no_grad():
+            action_probs, _, h_actor_next, _ = self.forward(obs, h_actor)
+            
+            if add_noise:
+                noise = torch.randn_like(action_probs) * 0.1 # 0.1 is the std
+                action_probs = torch.clamp(action_probs + noise, 0, 1)
+
+            action = action_probs.argmax(-1).item()
+            
+        return action, h_actor_next
+    
+    def _update_target_networks(self, tau):
+        # Polyak averaging
+        for target_param, param in zip(self.target_actor.parameters(), self.actor_gru.parameters()):
+            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+        for target_param, param in zip(self.target_actor_fc.parameters(), self.actor_fc.parameters()):
+            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+        for target_param, param in zip(self.target_critic.parameters(), self.critic_gru.parameters()):
+            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+        for target_param, param in zip(self.target_critic_fc.parameters(), self.critic_fc.parameters()):
+            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+            
 
 # UTILS
 
