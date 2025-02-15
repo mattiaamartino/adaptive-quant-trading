@@ -4,12 +4,9 @@ import copy
 import torch
 import torch.nn as nn
 
-from tqdm import trange
 
-from Env import POMDPTEnv, dt_policy 
 
 # EPISODES 
-
 class Episode:
     def __init__(self):
         self.obs = []
@@ -74,8 +71,6 @@ class iRDPGAgent(nn.Module):
                  obs_dim, 
                  action_dim=2, 
                  hidden_dim=64, 
-                 gamma=0.99,
-                 tau=0.001,
                  device="cuda"):
         super().__init__()
 
@@ -98,6 +93,8 @@ class iRDPGAgent(nn.Module):
 
     def forward(self, obs, h_actor=None, h_critic=None):
         obs = obs.to(self.device)
+        h_actor = h_actor.to(self.device) if h_actor is not None else None
+        h_critic = h_critic.to(self.device) if h_critic is not None else None
         
         # Actor
         z_actor, h_actor_next = self.actor_gru(obs, h_actor)
@@ -111,10 +108,12 @@ class iRDPGAgent(nn.Module):
     
     def target_forward(self, obs, h_actor=None, h_critic=None):
         obs = obs.to(self.device)
+        h_actor = h_actor.to(self.device) if h_actor is not None else None
+        h_critic = h_critic.to(self.device) if h_critic is not None else None
 
         # Target actor
         z_actor, h_actor_next = self.target_actor(obs, h_actor)
-        target_action_probs = torch.softmax(self.target_actor_fc(z_actor))
+        target_action_probs = torch.sigmoid(self.target_actor_fc(z_actor))
 
         # Target critic
         z_critic, h_critic_next = self.target_critic(torch.concat([obs, target_action_probs.detac()], dim=-1), h_critic)
@@ -126,6 +125,7 @@ class iRDPGAgent(nn.Module):
     def act(self, obs, h_actor=None, add_noise=True):
 
         obs = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+        h_actor = h_actor.to(self.device) if h_actor is not None else None
 
         with torch.no_grad():
             action_probs, _, h_actor_next, _ = self.forward(obs, h_actor)
@@ -149,55 +149,3 @@ class iRDPGAgent(nn.Module):
         for target_param, param in zip(self.target_critic_fc.parameters(), self.critic_fc.parameters()):
             target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
             
-
-# UTILS
-
-def collect_episode(env, agent, noise, device="cuda"):
-
-    ep = Episode()
-    obs = env.reset()
-    done = False
-
-    dummy_action = torch.zeros((1,1), dtype=torch.int64, device=device)
-    
-    while not done:
-
-        with torch.no_grad():
-            obs_t = torch.tensor(obs, dtype=torch.float, device=device).view(1,1,-1)
-            logits, Q_vals, _, _ = agent(obs_t, dummy_action)
-            # pick a policy action
-            probs = torch.softmax(logits[0,0,:], dim=-1)
-            if noise:
-                dist = torch.distributions.Categorical(probs)
-                action = dist.sample().item()
-            else:
-                action = probs.argmax().item()
-        
-        next_obs, reward, done, _ = env.step(action)
-        
-        ep.obs.append(obs)
-        ep.actions.append(action)
-        ep.rewards.append(reward)
-        ep.done_flags.append(done)
-        
-        obs = next_obs
-    
-    return ep
-
-def collect_demonstrations(df, window_size=60, n_episodes=50):
-    demos = []
-    env = POMDPTEnv(df, window_size=window_size)
-    for _ in trange(n_episodes, desc="Collecting Demonstrations"):
-        ep = Episode()
-        obs = env.reset()
-        done = False
-        while not done:
-            a = dt_policy(env)
-            next_obs, rew, done, _ = env.step(a)
-            ep.obs.append(obs)
-            ep.actions.append(a)
-            ep.rewards.append(rew)
-            ep.done_flags.append(done)
-            obs = next_obs
-        demos.append(ep)
-    return demos
