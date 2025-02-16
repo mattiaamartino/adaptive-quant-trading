@@ -87,7 +87,7 @@ class POMDPTEnv(TradingEnv):
         indicators = [self.buy_line, self.sell_line]
 
         account = [self.position, self.cumulative_profit]
-        return np.concatenate((prices, indicators, account))
+        return np.concatenate([prices, indicators, account])
     
     def reset(self):
         self.current_step = self.window_size
@@ -144,7 +144,7 @@ class POMDPTEnv(TradingEnv):
                 self._compute_dual_thrust()
                 obs = self._next_observation()
             else:
-                obs = np.zeros_like(self.observation_space.shape, dtype=np.float32)
+                obs = np.zeros(self.observation_space.shape[0], dtype=np.float32)
             
             if self.balance <= 0:
                 done = True
@@ -176,7 +176,7 @@ def dt_policy(env):
     return action
     
 
-def intraday_greedy_actions(env, device="cuda"):
+def intraday_greedy_actions(env):
 
     day_len = compute_day_length(env.df)  
 
