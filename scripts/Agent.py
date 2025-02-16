@@ -4,6 +4,9 @@ import copy
 import torch
 import torch.nn as nn
 
+from tqdm import trange, tqdm
+
+from Env import intraday_greedy_actions, dt_policy
 
 
 # EPISODES 
@@ -71,14 +74,15 @@ class iRDPGAgent(nn.Module):
                  obs_dim, 
                  action_dim=2, 
                  hidden_dim=64, 
+                 tau=0.001,
                  device="cuda"):
         super().__init__()
 
-        self.actor_gru = nn.GRU(obs_dim, hidden_dim, batch_first=True) 
-        self.actor_fc = nn.Linear(hidden_dim, action_dim) # [P long, P short]
+        self.actor_gru = nn.GRU(obs_dim, hidden_dim, batch_first=True).to(device)
+        self.actor_fc = nn.Linear(hidden_dim, action_dim).to(device) # [P long, P short]
 
-        self.critic_gru = nn.GRU(obs_dim + action_dim, hidden_dim, batch_first=True)
-        self.critic_fc = nn.Linear(hidden_dim, 1)
+        self.critic_gru = nn.GRU(obs_dim + action_dim, hidden_dim, batch_first=True).to(device)
+        self.critic_fc = nn.Linear(hidden_dim, 1).to(device)
 
         # Target networks
         self.target_actor = copy.deepcopy(self.actor_gru)
@@ -87,7 +91,10 @@ class iRDPGAgent(nn.Module):
         self.target_critic_fc = copy.deepcopy(self.critic_fc)
 
         # Initalize target networks
-        self._update_target_networks(1.0)
+        self.target_actor.flatten_parameters()
+        self.target_critic.flatten_parameters()
+
+        self._update_target_networks(tau)
 
         self.device = device
 
@@ -116,10 +123,21 @@ class iRDPGAgent(nn.Module):
         target_action_probs = torch.sigmoid(self.target_actor_fc(z_actor))
 
         # Target critic
-        z_critic, h_critic_next = self.target_critic(torch.concat([obs, target_action_probs.detac()], dim=-1), h_critic)
+        z_critic, h_critic_next = self.target_critic(torch.concat([obs, target_action_probs.detach()], dim=-1), h_critic)
         target_q_value = self.target_critic_fc(z_critic)
 
         return target_action_probs, target_q_value, h_actor_next, h_critic_next
+    
+    
+    def critic_forward(self, obs, action, h_critic=None):
+        obs = obs.to(self.device)
+        action = action.to(self.device)
+        h_critic = h_critic.to(self.device) if h_critic is not None else None
+
+        z_critic, h_critic_next = self.critic_gru(torch.concat([obs, action], dim=-1), h_critic)
+        q_value = self.critic_fc(z_critic)
+
+        return q_value, h_critic_next
         
     
     def act(self, obs, h_actor=None, add_noise=True):
@@ -130,11 +148,12 @@ class iRDPGAgent(nn.Module):
         with torch.no_grad():
             action_probs, _, h_actor_next, _ = self.forward(obs, h_actor)
             
-            if add_noise:
-                noise = torch.randn_like(action_probs) * 0.1 # 0.1 is the std
-                action_probs = torch.clamp(action_probs + noise, 0, 1)
+        action = action_probs.squeeze(0).cpu().numpy()
 
-            action = action_probs.argmax(-1).item()
+        if add_noise:
+            noise = np.random.normal(0, 0.1, size=action.shape)
+            action = np.clip(action + noise, 0, 1)
+
             
         return action, h_actor_next
     
@@ -148,4 +167,51 @@ class iRDPGAgent(nn.Module):
             target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
         for target_param, param in zip(self.target_critic_fc.parameters(), self.critic_fc.parameters()):
             target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+
+def generate_demonstration_episodes(env, n_episodes=5):
+    episodes = []
+    for _ in trange(n_episodes, desc='Generating Demonstrations'):
+        env.reset()
+        episode = Episode()
+        episode.is_demo = True
+        done = False
+
+        expert_action = intraday_greedy_actions(env)
+        
+        while not done:
+            action = dt_policy(env)
+            obs, reward, done, _ = env.step(action)
+            
+            episode.obs.append(obs)
+            episode.actions.append(action)
+            episode.rewards.append(reward)
+            episode.expert_actions.append(expert_action[env.current_step-1])
+            episode.dones.append(done)
+        
+        episodes.append(episode)
+    return episodes
+
+def collect_episode(env, agent, add_noise):
+    env.reset()
+    episode = Episode()
+    h_actor = None
+    done = False
+
+    expert_action = intraday_greedy_actions(env)
+    
+    while not done:
+        obs = env._next_observation()
+        action, h_actor = agent.act(obs, h_actor, add_noise=add_noise)
+        
+        next_obs, reward, done, _ = env.step(action)
+        
+        episode.obs.append(obs)
+        episode.actions.append(action)
+        episode.rewards.append(reward)
+        episode.expert_actions.append(expert_action[env.current_step-1])
+        episode.dones.append(done)
+
+        obs = next_obs
+        
+    return episode
             
