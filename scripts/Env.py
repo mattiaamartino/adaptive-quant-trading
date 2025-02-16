@@ -55,6 +55,7 @@ class POMDPTEnv(TradingEnv):
         self.buy_line = self.opens[idx] + k1 * self.range
         self.sell_line = self.opens[idx] - k2 * self.range
 
+
     def _compute_differential_sharpe_ratio(self, reward, eps=1e-6):
         delta_alpha = reward - self.alpha
         delta_beta = reward**2 - self.beta
@@ -118,37 +119,32 @@ class POMDPTEnv(TradingEnv):
             if self.current_step >= len(self.df) - 1:
                 done = True
             
-            desired_position = 1 if action == 0 else -1
+            desired_position = 1 if action[0] > action[1] else -1
 
             price_open = self.opens[self.current_step]
+            price_close = self.closes[self.current_step]
             prev_close = self.closes[self.current_step-1]
             prev_position = self.position
+
+            # Eq (1)
+            rt = (price_close - prev_close - 2 * self.slippage) * prev_position - \
+                    (abs(desired_position - prev_position) * self.transaction_cost * price_close)
             
-            # Close old
-            if prev_position != 0:
-                old_pnl = (price_open - self.entry_price) * prev_position
-                self.balance += old_pnl - (abs(prev_position) * self.transaction_cost)
-            
-            # Open new
-            cost = abs(desired_position) * (self.transaction_cost * price_open + self.slippage)
-            self.balance -= cost
+            self.balance += rt
             self.position = desired_position
             self.entry_price = price_open
-            
-            price_close = self.closes[self.current_step]
-            # Eq (1) in the paper
-            rt = (price_close - prev_close - 2 * self.slippage) * prev_position - \
-                    (abs(desired_position) * self.transaction_cost * price_open)
 
             self.cumulative_profit += rt
             
             dsr = self._compute_differential_sharpe_ratio(rt)
-            obs = self._next_observation()  if not done else np.zeros(self.observation_space.shape, dtype=np.float32)
 
             # next step
             self.current_step += 1
             if self.current_step < len(self.df):
                 self._compute_dual_thrust()
+                obs = self._next_observation()
+            else:
+                obs = np.zeros_like(self.observation_space.shape, dtype=np.float32)
             
             if self.balance <= 0:
                 done = True
@@ -174,7 +170,7 @@ def dt_policy(env):
     else: # Do nothing
         if env.position == 1:
             action[0] = 1.0
-        elif env.position == 0:
+        elif env.position == -1:
             action[1] = 1.0
     
     return action
