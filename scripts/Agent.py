@@ -6,7 +6,7 @@ import torch.nn as nn
 
 from tqdm import trange, tqdm
 
-from Env import intraday_greedy_actions, dt_policy
+from scripts.Env import intraday_greedy_actions, dt_policy
 
 
 # EPISODES 
@@ -114,16 +114,16 @@ class iRDPGAgent(nn.Module):
         return action_probs, q_value, h_actor_next, h_critic_next
     
     def target_forward(self, obs, h_actor=None, h_critic=None):
-        obs = obs.to(self.device)
-        h_actor = h_actor.to(self.device) if h_actor is not None else None
-        h_critic = h_critic.to(self.device) if h_critic is not None else None
+        obs = obs.to(self.device).contiguous()
+        h_actor = h_actor.to(self.device).contiguous() if h_actor is not None else None
+        h_critic = h_critic.to(self.device).contiguous() if h_critic is not None else None
 
         # Target actor
         z_actor, h_actor_next = self.target_actor(obs, h_actor)
         target_action_probs = torch.sigmoid(self.target_actor_fc(z_actor))
 
         # Target critic
-        z_critic, h_critic_next = self.target_critic(torch.concat([obs, target_action_probs.detach()], dim=-1), h_critic)
+        z_critic, h_critic_next = self.target_critic(torch.concat([obs, target_action_probs.detach()], dim=-1).contiguous(), h_critic)
         target_q_value = self.target_critic_fc(z_critic)
 
         return target_action_probs, target_q_value, h_actor_next, h_critic_next
@@ -168,7 +168,7 @@ class iRDPGAgent(nn.Module):
         for target_param, param in zip(self.target_critic_fc.parameters(), self.critic_fc.parameters()):
             target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
 
-def generate_demonstration_episodes(env, n_episodes=5):
+def generate_demonstration_episodes(env, n_episodes=50):
     episodes = []
     for _ in trange(n_episodes, desc='Generating Demonstrations'):
         env.reset()
@@ -177,6 +177,16 @@ def generate_demonstration_episodes(env, n_episodes=5):
         done = False
 
         expert_action = intraday_greedy_actions(env)
+
+        expert_action_one_hot = np.zeros((len(expert_action), 2), dtype=np.float32)
+        for i, a in enumerate(expert_action):
+            if a == 0:
+                expert_action_one_hot[i] = [1.0, 0.0]
+            elif a == 1:
+                expert_action_one_hot[i] = [0.0, 1.0]
+            else:
+                raise ValueError(f"Invalid action: {a}")
+        
         
         while not done:
             action = dt_policy(env)
@@ -185,7 +195,7 @@ def generate_demonstration_episodes(env, n_episodes=5):
             episode.obs.append(obs)
             episode.actions.append(action)
             episode.rewards.append(reward)
-            episode.expert_actions.append(expert_action[env.current_step-1])
+            episode.expert_actions.append(expert_action_one_hot[env.current_step-1])
             episode.dones.append(done)
         
         episodes.append(episode)
@@ -198,7 +208,15 @@ def collect_episode(env, agent, add_noise):
     done = False
 
     expert_action = intraday_greedy_actions(env)
-    
+    expert_action_one_hot = np.zeros((len(expert_action), 2), dtype=np.float32)
+    for i, a in enumerate(expert_action):
+        if a == 0:
+            expert_action_one_hot[i] = [1.0, 0.0]
+        elif a == 1:
+            expert_action_one_hot[i] = [0.0, 1.0]
+        else:
+            raise ValueError(f"Invalid action: {a}")
+
     while not done:
         obs = env._next_observation()
         action, h_actor = agent.act(obs, h_actor, add_noise=add_noise)
@@ -208,7 +226,7 @@ def collect_episode(env, agent, add_noise):
         episode.obs.append(obs)
         episode.actions.append(action)
         episode.rewards.append(reward)
-        episode.expert_actions.append(expert_action[env.current_step-1])
+        episode.expert_actions.append(expert_action_one_hot[env.current_step-1])
         episode.dones.append(done)
 
         obs = next_obs
