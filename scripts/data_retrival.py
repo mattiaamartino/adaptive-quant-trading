@@ -3,9 +3,15 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 import os
+from dotenv import load_dotenv
 
-API_KEY = 'PK9E85AK8QRJVNZC7UYZ'
-SECRET_KEY = 'T6uSv4lkOPvlMBKS1Q5OGGWdbaCtuaLR62MzLmpq'
+load_dotenv()
+
+api_key = os.getenv('API_KEY')
+secret_key = os.getenv('SECRET_KEY')
+
+API_KEY = api_key
+SECRET_KEY = secret_key
 
 def initialize_client():
     return StockHistoricalDataClient(API_KEY, SECRET_KEY)
