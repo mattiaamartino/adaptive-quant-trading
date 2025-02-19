@@ -117,15 +117,22 @@ def train(config, env, agent, buffer):
             
             save_model(agent, filename=f"trained_irdpg_{epoch+1}.pth")
 
-            os.makedirs("train/images", exist_ok=True)
-            plt.figure()
-            plt.plot(total_critic_losses, label="Critic Loss")
-            plt.plot(total_actor_losses, label="Actor Loss")
-            plt.xlabel("Epoch")
-            plt.ylabel("Loss")
-            plt.legend()
-            plt.savefig("train/images/loss_plot.png")
-            plt.close()
+    os.makedirs("images/train", exist_ok=True)
+    plt.figure()
+    plt.plot(total_critic_losses, label="Critic Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig("images/train/critic_loss_plot.png")
+    plt.close()
+
+    plt.figure()
+    plt.plot(total_actor_losses, label="Actor Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.savefig("train/images/actor_loss_plot.png")
+    plt.close()
 
             
 
@@ -139,9 +146,6 @@ def save_model(agent, filename="trained_irdpg.pth"):
         "target_actor_fc": agent.target_actor_fc.state_dict(),
         "target_critic_gru": agent.target_critic.state_dict(),
         "target_critic_fc": agent.target_critic_fc.state_dict(),
-
-        "actor_optim": agent.actor_optim.state_dict(),
-        "critic_optim": agent.critic_optim.state_dict()
     }
     torch.save(checkpoint, filename)
     print(f"\nModel saved as {filename}\n")
