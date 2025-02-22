@@ -3,18 +3,26 @@ import pandas as pd
 from gym import spaces
 from gym_trading_env.environments import TradingEnv
 
-import torch
-
 
 class POMDPTEnv(TradingEnv):
-    def __init__(self, df, window_size=60, initial_balance=100_000,transaction_cost=2.3e-5, slippage=0.2, eta=0.01):
-        super().__init__(df=df)
+    def __init__(self, df, window_size=5, 
+                 initial_balance=100_000,
+                 transaction_cost=2.3e-5, 
+                 slippage=0.2, 
+                 eta=0.01, 
+                 k1=0.5, 
+                 k2=0.5):
         
-        self.df = df
+        super().__init__(df=df)
+
         self.window_size = window_size
         self.initial_balance = initial_balance
+
         self.transaction_cost = transaction_cost
         self.slippage = slippage
+
+        self.k1 = k1
+        self.k2 = k2
 
         self.observation_space = spaces.Box(
             low=-np.inf, 
@@ -37,24 +45,50 @@ class POMDPTEnv(TradingEnv):
         self.cumulative_profit = 0 
 
         # Initialize
+        self.df = self._preprocess_df(df)
         self.vectorize()
         self.reset()
+
+    def _preprocess_df(self, df):
         
-    def _compute_dual_thrust(self, k1=0.3, k2=0.3):
-        idx = self.current_step - 1
+        df = df.copy()
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
 
-        hh = self.high_rolling_max[idx]
-        hc = self.close_rolling_max[idx]
-        lc = self.close_rolling_min[idx]
-        ll = self.low_rolling_min[idx]
+        df['date'] = df.index.date
 
-        if np.isnan(hh) or np.isnan(hc) or np.isnan(lc) or np.isnan(ll): # Check necessary for first window_size steps
-            #set them to open price so that range = 0
-            hh = hc = lc = ll = self.opens[idx]
+        daily_df = df.groupby('date').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+        })
+        daily_df.dropna(subset=['open','high','low','close'], inplace=True)
 
-        self.range = max(hh - lc, hc - ll)
-        self.buy_line = self.opens[idx] + k1 * self.range
-        self.sell_line = self.opens[idx] - k2 * self.range
+        daily_df['HH'] = daily_df['high'].rolling(window=self.window_size).max()
+        daily_df['HC'] = daily_df['close'].rolling(window=self.window_size).max()
+        daily_df['LC'] = daily_df['close'].rolling(window=self.window_size).min()
+        daily_df['LL'] = daily_df['low'].rolling(window=self.window_size).min()
+
+        daily_df['Range'] = np.maximum(daily_df['HH'] - daily_df['LC'], daily_df['HC'] - daily_df['LL'])
+        daily_df['BuyLine'] = daily_df['open'] + self.k1 * daily_df['Range']
+        daily_df['SellLine'] = daily_df['open'] - self.k2 * daily_df['Range']
+
+        df = df.merge(daily_df[['BuyLine', 'SellLine']], left_on='date', right_index=True, how='left')
+
+        df['BuyLine'] = df['BuyLine'].ffill()
+        df['SellLine'] = df['SellLine'].ffill()
+
+        self.first_valid_idx = daily_df.index[self.window_size] # Index of the first valid observation
+
+        return df.drop(columns=['date'])
+
+        
+    def _compute_dual_thrust(self):
+        idx = self.current_step
+
+        self.buy_point = self.buy_lines[idx]
+        self.sell_point = self.sell_lines[idx]
 
 
     def _compute_differential_sharpe_ratio(self, reward, eps=1e-6):
@@ -85,13 +119,17 @@ class POMDPTEnv(TradingEnv):
         ]).flatten() # (4 * window_size)
 
         self._compute_dual_thrust()
-        indicators = [self.buy_line, self.sell_line, self.volume[self.current_step], self.trade_count[self.current_step]]
+        indicators = [self.buy_point, 
+                      self.sell_point, 
+                      self.volume[self.current_step], 
+                      self.trade_count[self.current_step]
+                      ]
 
         account = [self.position, self.cumulative_profit]
         return np.concatenate([prices, indicators, account])
     
     def reset(self):
-        self.current_step = self.window_size
+        self.current_step = np.where(self.df.index.date >= self.first_valid_idx)[0][0]
 
         self.balance = self.initial_balance
         self.position = 0 # 0: no position, 1: long, -1: short
@@ -100,8 +138,8 @@ class POMDPTEnv(TradingEnv):
         self.buy_line = 0
         self.sell_line = 0
         
-        self.alpha = 0
-        self.beta = 0
+        self.alpha = 1e-6
+        self.beta = 1e-6
 
         # first observation (update lines)
         self._compute_dual_thrust()
@@ -117,10 +155,8 @@ class POMDPTEnv(TradingEnv):
         self.trade_count = self.df['trade_count'].values
         self.volume = self.df['volume'].values
 
-        self.high_rolling_max  = self.df['high'].rolling(self.window_size).max().values
-        self.close_rolling_max = self.df['close'].rolling(self.window_size).max().values
-        self.close_rolling_min = self.df['close'].rolling(self.window_size).min().values
-        self.low_rolling_min   = self.df['low'].rolling(self.window_size).min().values
+        self.buy_lines = self.df['BuyLine'].values
+        self.sell_lines = self.df['SellLine'].values
 
 
     def step(self, action):
@@ -165,8 +201,8 @@ class POMDPTEnv(TradingEnv):
 
 def dt_policy(env):
 
-    buy_line = env.buy_line
-    sell_line= env.sell_line
+    buy_line = env.buy_lines[env.current_step]
+    sell_line= env.sell_lines[env.current_step]
 
     curr = env.opens[env.current_step]
 
