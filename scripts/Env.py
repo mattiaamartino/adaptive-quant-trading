@@ -163,22 +163,27 @@ class POMDPTEnv(TradingEnv):
             done = False
             if self.current_step >= len(self.df) - 1:
                 done = True
-            
+
+            prev_position = self.position
             desired_position = 1 if action[0] > action[1] else -1
 
             price_open = self.opens[self.current_step]
             price_close = self.closes[self.current_step]
-            prev_close = self.closes[self.current_step-1]
-            prev_position = self.position
+            prev_close = self.closes[self.current_step-1] if self.current_step > 0 else price_close
 
             # Eq (1)
-            rt = (price_close - prev_close - 2 * self.slippage) * prev_position - \
-                    (abs(desired_position - prev_position) * self.transaction_cost * price_close)
-            
-            self.balance += rt
-            self.position = desired_position
-            self.entry_price = price_open
+            rt = (price_close - prev_close - 2 * self.slippage) * prev_position
 
+            if desired_position != prev_position and prev_position != 0:
+                rt -= abs(prev_position) * self.transaction_cost * price_close
+                self.position = 0
+            
+            if desired_position != prev_position:
+                rt -= abs(desired_position) * self.transaction_cost * price_close
+                self.position = desired_position
+                self.entry_price = price_open
+
+            self.balance += rt
             self.cumulative_profit += rt
             
             dsr = self._compute_differential_sharpe_ratio(rt)
@@ -191,7 +196,7 @@ class POMDPTEnv(TradingEnv):
             else:
                 obs = np.zeros(self.observation_space.shape[0], dtype=np.float32)
             
-            if self.balance <= 0:
+            if self.balance <= 0.5 * self.initial_balance:
                 done = True
             
             return obs, dsr, done, {}
@@ -223,11 +228,11 @@ def dt_policy(env):
 
 def intraday_greedy_actions(env):
 
-    day_len = 391  
+    day_len = 390
 
-    high_prices = env.highs
     low_prices = env.lows
-    num_steps = len(high_prices)
+    high_prices = env.highs
+    num_steps = len(low_prices)
     actions = np.zeros(num_steps, dtype=int)
 
     i = env.window_size
@@ -235,14 +240,13 @@ def intraday_greedy_actions(env):
         day_start = i
         day_end = min(i + day_len, num_steps)
         
-        day_high = high_prices[day_start:day_end]
-        day_low = low_prices[day_start:day_end]
-        idx_min = np.argmin(day_high).item()  # Buy
-        idx_max = np.argmax(day_low).item()  # Sell
+        day_lows = low_prices[day_start:day_end]
+        day_highs = high_prices[day_start:day_end]
+        idx_min = np.argmin(day_lows)
+        idx_max = np.argmax(day_highs)
 
-        actions[day_start + idx_min] = 0  # Long
-        actions[day_start + idx_max] = 1  # Short
-
-        i = day_end  
-
+        actions[day_start + idx_min] = 0
+        actions[day_start + idx_max] = 1
+        
+        i = day_end  # Move to next day
     return actions
