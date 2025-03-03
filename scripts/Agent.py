@@ -21,7 +21,7 @@ class Episode:
         self.priority = 1.0 # priority for PER
 
 class PERBuffer:
-    def __init__(self, max_episodes=1000, alpha=0.6, beta=0.4, device="cuda"):
+    def __init__(self, max_episodes=100, alpha=0.6, beta=0.4, device="cuda"):
         self.max_episodes = max_episodes
         self.alpha = alpha # priority exponent
         self.beta = beta # importance sampling exponent
@@ -53,7 +53,7 @@ class PERBuffer:
             self.priorities[i] = p ** self.alpha
 
     def sample(self, batch_size):
-        probs = np.array(self.priorities) / np.sum(self.priorities)
+        probs = np.array(self.priorities) / np.sum(self.priorities) 
         indices = np.random.choice(len(self.episodes), batch_size, p=probs)
         batch = [self.episodes[i] for i in indices]
         
@@ -98,20 +98,15 @@ class iRDPGAgent(nn.Module):
 
         self.device = device
 
-    def forward(self, obs, h_actor=None, h_critic=None):
+    def forward(self, obs, h_actor=None):
         obs = obs.to(self.device)
         h_actor = h_actor.to(self.device) if h_actor is not None else None
-        h_critic = h_critic.to(self.device) if h_critic is not None else None
         
         # Actor
         z_actor, h_actor_next = self.actor_gru(obs, h_actor)
-        action_probs = torch.softmax(self.actor_fc(z_actor), dim=-1)
+        action_probs = self.actor_fc(z_actor)
 
-        # Critic
-        z_critic, h_critic_next = self.critic_gru(torch.concat([obs, action_probs.detach()], dim=-1), h_critic)
-        q_value = self.critic_fc(z_critic)
-
-        return action_probs, q_value, h_actor_next, h_critic_next
+        return action_probs, h_actor_next
     
     def target_forward(self, obs, h_actor=None, h_critic=None):
         obs = obs.to(self.device).contiguous()
@@ -146,7 +141,7 @@ class iRDPGAgent(nn.Module):
         h_actor = h_actor.to(self.device) if h_actor is not None else None
 
         with torch.no_grad():
-            action_probs, _, h_actor_next, _ = self.forward(obs, h_actor)
+            action_probs, h_actor_next = self.forward(obs, h_actor)
             
         action = action_probs.squeeze(0).cpu().numpy()
         
@@ -184,9 +179,9 @@ def generate_demonstration_episodes(env, n_episodes=50):
             episode.obs.append(obs)
             episode.actions.append(action)
             episode.rewards.append(reward)
-            episode.expert_actions.append(np.zeros(2, dtype=np.float32))
+            episode.expert_actions.append([None, None])
             episode.dones.append(done)
-        
+    
         episodes.append(episode)
     return episodes
 
@@ -200,9 +195,9 @@ def collect_episode(env, agent, add_noise):
     expert_action = intraday_greedy_actions(env)
     expert_action_one_hot = np.zeros((len(expert_action), 2), dtype=np.float32)
     for i, a in enumerate(expert_action):
-        if a == 0:
+        if a == 1:
             expert_action_one_hot[i] = [1.0, 0.0]
-        elif a == 1:
+        elif a == -1:
             expert_action_one_hot[i] = [0.0, 1.0]
         else:
             raise ValueError(f"Invalid action: {a}")
