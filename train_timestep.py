@@ -1,6 +1,5 @@
 import os
 
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -174,6 +173,7 @@ def train(config, env, agent, buffer):
         # actor_loss.backward()
         # actor_optim.step()
 
+        # -- Update both networks --
         critic_optim.zero_grad()
         actor_optim.zero_grad()
 
@@ -227,7 +227,7 @@ def train(config, env, agent, buffer):
 
 
 config = {
-    "epochs": 10,          # Total training epochs
+    "epochs": 100,          # Total training epochs
     "batch_size": 32,       # Episodes per batch
     "gamma": 0.99,          # Discount factor
     "tau": 0.001,            # Target network update rate
@@ -238,13 +238,13 @@ config = {
     "critic_lr": 1e-3,
     "eps_demo": 0.1,        # Priority boost for demos
     "noise_std": 0.01,       # Exploration noise
-    "min_demo_episodes": 2, # Min demo episodes to start
+    "min_demo_episodes": 10, # Min demo episodes to start
     "seq_len": 5          # Match window_size
 }
 
 env = POMDPTEnv(df, window_size=config["seq_len"])
 agent = iRDPGAgent(obs_dim=env.observation_space.shape[0], device=device)
-buffer = PERBuffer(max_episodes=3)
+buffer = PERBuffer(max_episodes=20)
 
 train(config, env, agent, buffer)
 
