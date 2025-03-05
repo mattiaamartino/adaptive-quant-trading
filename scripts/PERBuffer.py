@@ -16,7 +16,7 @@ class Episode:
         self.is_demo = False # if the episode is a demonstration
         self.priority = 1.0 # priority for PER
 
-class PRBuffer:
+class PERBuffer:
     def __init__(self, max_episodes=100, alpha=0.6, beta=0.4, device="cuda"):
         self.max_episodes = max_episodes
         self.alpha = alpha # priority exponent
@@ -66,8 +66,15 @@ class PRBuffer:
 
 def generate_demonstration_episodes(env, n_episodes=50):
     episodes = []
-    for _ in trange(n_episodes, desc='Generating Demonstrations'):
+
+    valid_days = env.valid_days
+    selected_days = np.random.choice(valid_days, size=n_episodes, replace=True)
+
+    for day in selected_days:
+        env.current_day = day
+        env.day_indices = np.where(env.dates == day)[0]
         env.reset()
+
         episode = Episode()
         episode.is_demo = True
         done = False
@@ -83,15 +90,19 @@ def generate_demonstration_episodes(env, n_episodes=50):
             episode.dones.append(done)
     
         episodes.append(episode)
+
+    print(f"Generated {len(episodes)} demonstration episodes.")
     return episodes
 
 
-def collect_episode(env, agent, add_noise):
+def collect_episode(env, agent):
     env.reset()
     episode = Episode()
     h_actor = None
+    prev_action = None
     done = False
 
+    # This now uses day-based indices internally
     expert_action = intraday_greedy_actions(env)
     expert_action_one_hot = np.zeros((len(expert_action), 2), dtype=np.float32)
     for i, a in enumerate(expert_action):
@@ -104,14 +115,14 @@ def collect_episode(env, agent, add_noise):
 
     while not done:
         obs = env._next_observation()
-        action, h_actor = agent.act(obs, h_actor, add_noise=add_noise)
+        action, h_actor = agent.act(obs, prev_action, h_actor)
         
         next_obs, reward, done, _ = env.step(action)
         
         episode.obs.append(obs)
         episode.actions.append(action)
         episode.rewards.append(reward)
-        episode.expert_actions.append(expert_action_one_hot[env.current_step-1])
+        episode.expert_actions.append(expert_action_one_hot[env.current_step - env.day_start - 1])
         episode.dones.append(done)
 
         obs = next_obs
