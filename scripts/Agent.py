@@ -1,4 +1,3 @@
-import numpy as np
 import copy
 
 import torch
@@ -88,7 +87,7 @@ class iRDPGAgent(nn.Module):
             prev_action = torch.tensor(prev_action, dtype=torch.float32, device=self.device).unsqueeze(0)
 
         with torch.no_grad():
-            h_t, _ = self.gru(torch.cat([obs, prev_action], dim=-1), h_actor)
+            _, h_t = self.gru(torch.cat([obs, prev_action], dim=-1), h_actor)
             action_probs, h_actor_next = self.actor_forward(h_t, h_actor)
             
         action = action_probs.squeeze(0).cpu().numpy()

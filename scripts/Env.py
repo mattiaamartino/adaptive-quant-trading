@@ -6,7 +6,7 @@ from gym_trading_env.environments import TradingEnv
 
 class POMDPTEnv(TradingEnv):
     def __init__(self, df, window_size=5, 
-                 initial_balance=100_000,
+                 initial_balance=1_000,
                  transaction_cost=2.3e-5, 
                  slippage=0.2, 
                  eta=0.01, 
