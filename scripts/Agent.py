@@ -20,6 +20,7 @@ class iRDPGAgent(nn.Module):
         # GRU encoder
         if self.encoder_type=='gru':
             self.encoder = nn.GRU(action_dim + obs_dim, hidden_dim, batch_first=True).to(device)
+            
         elif self.encoder_type=='transformer':
             # Projection layer
             self.input_projection = nn.Linear(obs_dim + action_dim, hidden_dim).to(device)
